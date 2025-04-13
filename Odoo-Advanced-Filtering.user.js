@@ -95,11 +95,15 @@
         .${config.filterMenuClass} .filter-option label {
             margin-left: 8px;
             cursor: pointer;
+            flex: 1;
+            user-select: none;
         }
 
         .${config.filterMenuClass} .form-check {
             width: 100%;
             cursor: pointer;
+            display: flex;
+            align-items: center;
         }
 
         .${config.filterMenuClass} .filter-option:hover {
@@ -118,6 +122,56 @@
         .${config.filterMenuClass} .filter-options {
             max-height: 250px;
             overflow-y: auto;
+        }
+
+        .filter-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background-color: #714B67;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            box-shadow: 0 -2px 5px rgba(0,0,0,0.2);
+        }
+
+        .filter-bar .record-count {
+            margin-right: 20px;
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+
+        .filter-bar .active-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            flex: 1;
+        }
+
+        .filter-bar .filter-tag {
+            background-color: rgba(255,255,255,0.2);
+            padding: 5px 10px;
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .filter-bar .filter-tag .remove-filter {
+            cursor: pointer;
+            opacity: 0.7;
+        }
+
+        .filter-bar .filter-tag .remove-filter:hover {
+            opacity: 1;
+        }
+
+        .filter-bar .clear-all-filters {
+            margin-left: 20px;
         }
     `;
 
@@ -281,6 +335,66 @@
         }
     }
 
+    // Sayısal değeri normalize et
+    function normalizeNumericValue(value) {
+        // Boş değerleri kontrol et
+        if (!value || value.trim() === '') return 0;
+
+        // Virgül ve nokta işaretlerini düzelt
+        // Önce binlik ayracı olan noktaları kaldır
+        let normalized = value.replace(/\./g, '');
+        // Sonra ondalık ayracı olan virgülü noktaya çevir
+        normalized = normalized.replace(',', '.');
+
+        // Sayıya çevir
+        const num = parseFloat(normalized);
+        return isNaN(num) ? 0 : num;
+    }
+
+    // Hücre içeriğini parse et
+    function parseCellContent(cell) {
+        // Etiket içeren hücreleri kontrol et
+        const tagsContainer = cell.querySelector('.o_field_tags');
+        if (tagsContainer) {
+            // Tüm etiketleri al
+            const tags = Array.from(tagsContainer.querySelectorAll('.o_tag_badge_text'))
+                .map(tag => tag.textContent.trim());
+            return tags;
+        }
+
+        // Normal hücre içeriği
+        return [cell.getAttribute('data-tooltip') || cell.textContent.trim()];
+    }
+
+    // Get all unique values for a table column (ignoring filters, like Excel)
+    function getAllUniqueColumnValues(table, columnIndex) {
+        const uniqueValues = new Set();
+        // Tüm normal satırları al, özel satırları (Satır Ekle veya tamamen boş) hariç tut
+        const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row')).filter(row => !isSpecialRow(row));
+
+        rows.forEach(row => {
+            const cell = row.querySelector(`td:nth-child(${columnIndex + 1})`);
+            if (cell) {
+                const values = parseCellContent(cell);
+                values.forEach(value => uniqueValues.add(value));
+            }
+        });
+
+        return Array.from(uniqueValues).sort((a, b) => {
+            // Sayısal değerleri normalize et
+            const numA = normalizeNumericValue(a);
+            const numB = normalizeNumericValue(b);
+
+            // Eğer her iki değer de sayıysa sayısal sıralama yap
+            if (numA !== 0 || numB !== 0) {
+                return numA - numB;
+            }
+
+            // Değilse alfabetik sıralama yap
+            return a.localeCompare(b);
+        });
+    }
+
     // Create the filter menu for a column
     function createFilterMenu(table, columnName, columnIndex) {
         const filterMenu = document.createElement('div');
@@ -320,6 +434,11 @@
         // Get current filter for this column if it exists
         const columnFilter = activeFilters[columnName] || [];
 
+        // Seçili değerleri en üste taşı
+        const selectedValues = uniqueValues.filter(value => columnFilter.includes(value));
+        const unselectedValues = uniqueValues.filter(value => !columnFilter.includes(value));
+        uniqueValues = [...selectedValues, ...unselectedValues];
+
         // Create filter menu content
         const header = document.createElement('div');
         header.className = 'filter-header';
@@ -335,6 +454,20 @@
                 <input class="o_input" type="text" autocomplete="off" placeholder="Ara..." id="filter-search-input">
             </div>
         `;
+
+        // Arama kutucuğuna Enter tuşu desteği ekle ve odaklan
+        const searchInput = searchBox.querySelector('#filter-search-input');
+        searchInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                filterMenu.querySelector('#apply-filter').click();
+            }
+        });
+
+        // Filtre menüsü açıldığında arama kutucuğuna odaklan
+        setTimeout(() => {
+            searchInput.focus();
+        }, 0);
 
         const optionsContainer = document.createElement('div');
         optionsContainer.className = 'filter-options';
@@ -437,38 +570,26 @@
         });
 
         filterMenu.querySelector('#reset-filter').addEventListener('click', () => {
-            // "Sıfırla" butonu basıldığında, bu sütunun filtresini tamamen kaldır
-            // Get table ID
-            const tableContainer = table.closest('.o_list_view');
-            let tableId = tableContainer?.dataset.id;
-            if (!tableId) {
-                tableId = 'table_' + Math.random().toString(36).substr(2, 9);
-                if (tableContainer) tableContainer.dataset.id = tableId;
-            }
-
-            // Sütunu filtrelerden kaldır (tamamen)
-            if (state.activeFilters.has(tableId)) {
-                const tableFilters = state.activeFilters.get(tableId);
-                if (tableFilters[columnName]) {
-                    delete tableFilters[columnName];
-                }
-                // Filtre simgesini pasif duruma getir
-                updateFilterIconState(table, columnName, false);
-                // Filtre değerlerini state'den kaldır
-                state.columnFilterValues.delete(columnName);
-            }
-
-            // Diğer tüm aktif filtreleri uygula
-            applyAllFilters(table, tableId);
+            resetFilter(table, columnName, columnIndex);
             closeOpenFilterMenu();
         });
 
         filterMenu.querySelector('#apply-filter').addEventListener('click', () => {
             const checkedValues = [];
+            const searchText = searchInput.value.toLowerCase();
             const checkboxes = optionsContainer.querySelectorAll('input[type="checkbox"]:not(#select-all)');
             const selectAllCheckbox = filterMenu.querySelector('#select-all');
 
             checkboxes.forEach(checkbox => {
+                const optionDiv = checkbox.closest('.filter-option');
+                const label = optionDiv.querySelector('label');
+                const text = label.textContent.toLowerCase();
+
+                // Eğer arama yapılmışsa ve bu değer arama sonuçlarında yoksa, atla
+                if (searchText && !text.includes(searchText)) {
+                    return;
+                }
+
                 if (checkbox.checked) {
                     checkedValues.push(checkbox.value);
                 }
@@ -518,17 +639,23 @@
 
         // Filtre seçeneklerine tıklama işlevselliği ekle (checkbox dışındaki alanlara da tıklanabilsin)
         optionsContainer.querySelectorAll('.filter-option').forEach(option => {
+            const checkbox = option.querySelector('input[type="checkbox"]');
+            const label = option.querySelector('label');
+
+            // Label'a tıklama olayı ekle
+            label.addEventListener('click', (event) => {
+                checkbox.checked = !checkbox.checked;
+                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+
+            // Option div'ine tıklama olayı ekle
             option.addEventListener('click', (event) => {
-                // Eğer direkt olarak checkbox'a tıklandıysa, zaten checkbox'ın kendi işleyicisi çalışacak
-                // Bu yüzden sadece başka bir yere tıklandıysa işlem yap
-                if (event.target.type !== 'checkbox') {
-                    const checkbox = option.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        checkbox.checked = !checkbox.checked;
-                        // change olayını tetikle ki "Tümünü seç" durumu güncellensin
-                        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
+                // Eğer direkt olarak checkbox'a tıklandıysa, işlemi yapma
+                if (event.target.type === 'checkbox') {
+                    return;
                 }
+                checkbox.checked = !checkbox.checked;
+                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
             });
         });
 
@@ -579,35 +706,7 @@
         return false;
     }
 
-    // Get all unique values for a table column (ignoring filters, like Excel)
-    function getAllUniqueColumnValues(table, columnIndex) {
-        const uniqueValues = new Set();
-        // Tüm normal satırları al, özel satırları (Satır Ekle veya tamamen boş) hariç tut
-        const rows = Array.from(table.querySelectorAll('tbody tr.o_data_row')).filter(row => !isSpecialRow(row));
-
-        rows.forEach(row => {
-            const cell = row.querySelector(`td:nth-child(${columnIndex + 1})`);
-            if (cell) {
-                const value = cell.getAttribute('data-tooltip') || cell.textContent.trim();
-                uniqueValues.add(value);
-            }
-        });
-
-        return Array.from(uniqueValues).sort((a, b) => {
-            // Sort numerically if both values are numbers
-            const numA = parseFloat(a.replace(/,/g, ''));
-            const numB = parseFloat(b.replace(/,/g, ''));
-
-            if (!isNaN(numA) && !isNaN(numB)) {
-                return numA - numB;
-            }
-
-            // Otherwise sort alphabetically
-            return a.localeCompare(b);
-        });
-    }
-
-    // Get unique values only from visible rows for a specific column (used for second-level filtering)
+    // Get unique values only from visible rows for a specific column
     function getVisibleUniqueColumnValues(table, columnIndex) {
         const uniqueValues = new Set();
         // Sadece görünür ve normal satırları al (Satır Ekle ve boş satırlar hariç)
@@ -624,21 +723,22 @@
         rows.forEach(row => {
             const cell = row.querySelector(`td:nth-child(${columnIndex + 1})`);
             if (cell) {
-                const value = cell.getAttribute('data-tooltip') || cell.textContent.trim();
-                uniqueValues.add(value);
+                const values = parseCellContent(cell);
+                values.forEach(value => uniqueValues.add(value));
             }
         });
 
         return Array.from(uniqueValues).sort((a, b) => {
-            // Sort numerically if both values are numbers
-            const numA = parseFloat(a.replace(/,/g, ''));
-            const numB = parseFloat(b.replace(/,/g, ''));
+            // Sayısal değerleri normalize et
+            const numA = normalizeNumericValue(a);
+            const numB = normalizeNumericValue(b);
 
-            if (!isNaN(numA) && !isNaN(numB)) {
+            // Eğer her iki değer de sayıysa sayısal sıralama yap
+            if (numA !== 0 || numB !== 0) {
                 return numA - numB;
             }
 
-            // Otherwise sort alphabetically
+            // Değilse alfabetik sıralama yap
             return a.localeCompare(b);
         });
     }
@@ -699,6 +799,7 @@
 
         // Apply all filters to the table
         applyAllFilters(table, tableId);
+        updateFilterBar(tableId, table);
     }
 
     // Apply all active filters to a table
@@ -731,14 +832,14 @@
                 const columnIndex = findColumnIndexByName(table, columnName);
                 if (columnIndex === -1) continue; // Sütun bulunamadıysa atla
 
-                // Hücredeki değeri al
+                // Hücredeki değerleri al
                 const cell = row.querySelector(`td:nth-child(${columnIndex + 1})`);
                 if (!cell) continue; // Hücre bulunamadıysa atla
 
-                const cellValue = cell.getAttribute('data-tooltip') || cell.textContent.trim();
+                const cellValues = parseCellContent(cell);
 
-                // Eğer değer, izin verilen değerler arasında değilse, satırı gizle
-                if (!allowedValues.includes(cellValue)) {
+                // Eğer hücredeki değerlerden hiçbiri izin verilen değerler arasında değilse, satırı gizle
+                if (!cellValues.some(value => allowedValues.includes(value))) {
                     shouldShow = false;
                     break; // Bir filtre bile eşleşmezse, diğer filtreleri kontrol etmeye gerek yok
                 }
@@ -887,6 +988,11 @@
             // Yeni tablolarda filtre simgelerini aktifleştirmek için tabloları yeniden işle
             setTimeout(processAllTables, 500);
 
+            const filterBar = document.querySelector('.filter-bar');
+            if (filterBar) {
+                filterBar.style.display = 'none';
+            }
+
             return true; // Filtreler temizlendi
         }
 
@@ -952,6 +1058,125 @@
             contentObserver,
             intervalId
         };
+    }
+
+    // Filtre barını oluştur ve güncelle
+    function updateFilterBar(tableId, table) {
+        let filterBar = document.querySelector('.filter-bar');
+        if (!filterBar) {
+            filterBar = document.createElement('div');
+            filterBar.className = 'filter-bar';
+            document.body.appendChild(filterBar);
+        }
+
+        const tableFilters = state.activeFilters.get(tableId) || {};
+        const activeFilters = Object.entries(tableFilters);
+
+        if (activeFilters.length === 0) {
+            filterBar.style.display = 'none';
+            // Tüm filtre ikonlarını gizle
+            const filterIcons = table.querySelectorAll(`.${config.filterIconClass}`);
+            filterIcons.forEach(icon => {
+                icon.classList.remove(config.filterActiveClass);
+            });
+            return;
+        }
+
+        filterBar.style.display = 'flex';
+
+        // Kayıt sayılarını hesapla
+        const totalRows = table.querySelectorAll('tbody tr.o_data_row').length;
+        const visibleRows = Array.from(table.querySelectorAll('tbody tr.o_data_row'))
+            .filter(row => window.getComputedStyle(row).display !== 'none').length;
+
+        // Kayıt sayılarını gösteren element
+        const recordCount = document.createElement('div');
+        recordCount.className = 'record-count';
+        recordCount.textContent = `Kayıt sayısı: ${visibleRows} / ${totalRows}`;
+
+        const activeFiltersContainer = document.createElement('div');
+        activeFiltersContainer.className = 'active-filters';
+
+        activeFilters.forEach(([columnName, values]) => {
+            const filterTag = document.createElement('div');
+            filterTag.className = 'filter-tag';
+            const selectedValues = values.join(', ');
+
+            // Sütun başlığının görünen adını al
+            const columnHeader = table.querySelector(`th[data-name="${columnName}"]`);
+            const columnDisplayName = columnHeader ?
+                columnHeader.querySelector('.d-flex span')?.textContent.trim() || columnName :
+                columnName;
+
+            filterTag.innerHTML = `
+                <span>${columnDisplayName}: ${selectedValues}</span>
+                <span class="remove-filter" data-column="${columnName}">×</span>
+            `;
+            activeFiltersContainer.appendChild(filterTag);
+        });
+
+        const clearAllButton = document.createElement('button');
+        clearAllButton.className = 'btn btn-secondary clear-all-filters';
+        clearAllButton.textContent = 'Filtreleri Kaldır';
+        clearAllButton.onclick = () => {
+            state.activeFilters.delete(tableId);
+            state.columnFilterValues.clear();
+            // Tüm filtre ikonlarını gizle
+            const filterIcons = table.querySelectorAll(`.${config.filterIconClass}`);
+            filterIcons.forEach(icon => {
+                icon.classList.remove(config.filterActiveClass);
+            });
+            applyAllFilters(table, tableId);
+            updateFilterBar(tableId, table);
+        };
+
+        filterBar.innerHTML = '';
+        filterBar.appendChild(recordCount);
+        filterBar.appendChild(activeFiltersContainer);
+        filterBar.appendChild(clearAllButton);
+
+        // Tekil filtre kaldırma işlevselliği
+        filterBar.querySelectorAll('.remove-filter').forEach(removeBtn => {
+            removeBtn.onclick = (e) => {
+                const columnName = e.target.dataset.column;
+                delete tableFilters[columnName];
+                // İlgili filtre ikonunu gizle
+                const filterIcon = table.querySelector(`.${config.filterIconClass}[data-column="${columnName}"]`);
+                if (filterIcon) {
+                    filterIcon.classList.remove(config.filterActiveClass);
+                }
+                if (Object.keys(tableFilters).length === 0) {
+                    state.activeFilters.delete(tableId);
+                }
+                applyAllFilters(table, tableId);
+                updateFilterBar(tableId, table);
+            };
+        });
+    }
+
+    // Filtre sıfırlama işlevini güncelle
+    function resetFilter(table, columnName, columnIndex) {
+        const tableContainer = table.closest('.o_list_view');
+        let tableId = tableContainer?.dataset.id;
+        if (!tableId) {
+            tableId = 'table_' + Math.random().toString(36).substr(2, 9);
+            if (tableContainer) tableContainer.dataset.id = tableId;
+        }
+
+        if (state.activeFilters.has(tableId)) {
+            const tableFilters = state.activeFilters.get(tableId);
+            if (tableFilters[columnName]) {
+                delete tableFilters[columnName];
+            }
+            // Filtre simgesini pasif duruma getir
+            updateFilterIconState(table, columnName, false);
+            // Filtre değerlerini state'den kaldır
+            state.columnFilterValues.delete(columnName);
+        }
+
+        // Diğer tüm aktif filtreleri uygula
+        applyAllFilters(table, tableId);
+        updateFilterBar(tableId, table);
     }
 
     // Initialize the script
